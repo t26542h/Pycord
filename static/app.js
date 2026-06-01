@@ -41,13 +41,14 @@ const peers = new Map();
 
 const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
 
+// --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ RENDER ---
 function wsUrl() {
-  const config = window.PYCORD_CONFIG || {};
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = config.wsHost || window.location.hostname || "127.0.0.1";
-  const port = config.wsPort || 8765;
-  return `${protocol}//${host}:${port}`;
+  const host = window.location.hostname;
+  // Теперь мы всегда подключаемся к /ws на текущем хосте
+  return `${protocol}//${host}/ws`;
 }
+// ----------------------------------------
 
 function iconRefresh() {
   if (window.lucide) {
