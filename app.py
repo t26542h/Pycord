@@ -12,28 +12,22 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+# Используем aiohttp для совместимости с Render, чтобы всё работало на одном порту
+from aiohttp import web
+import aiohttp
+
+# Если вдруг websockets все еще нужен для логики
 try:
     import websockets
-except ImportError as exc:
-    raise SystemExit(
-        "The 'websockets' package is required. Run: python -m pip install -r requirements.txt"
-    ) from exc
+except ImportError:
+    websockets = None
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
-
-# --- ИСПРАВЛЕНИЯ ДЛЯ RENDER ---
-# Render автоматически назначает порт в переменную окружения 'PORT'
+# Render требует слушать 0.0.0.0 и порт из переменной окружения
 PORT = int(os.environ.get("PORT", 10000))
 HOST = "0.0.0.0"
-
-# Используем переменные Render, чтобы приложение слушало правильный адрес
-HTTP_HOST = HOST
-WS_HOST = HOST
-HTTP_PORT = PORT
 WS_PORT = PORT
-# -------------------------------
-
 MAX_MESSAGES_PER_CHANNEL = 100
 
 def utc_now() -> str:
@@ -141,17 +135,12 @@ def public_state() -> dict[str, Any]:
     return {"servers": safe_servers, "users": [public_user(client) for client in clients.values()]}
 
 async def send_json(websocket: Any, payload: dict[str, Any]) -> None:
-    await websocket.send(json.dumps(payload, ensure_ascii=False))
+    await websocket.send_str(json.dumps(payload, ensure_ascii=False))
 
 async def broadcast(payload: dict[str, Any]) -> None:
     body = json.dumps(payload, ensure_ascii=False)
-    recipients = [client.websocket for client in clients.values()]
-    if not recipients:
-        return
-    await asyncio.gather(
-        *(recipient.send(body) for recipient in recipients),
-        return_exceptions=True,
-    )
+    for client in clients.values():
+        await client.websocket.send_str(body)
 
 async def broadcast_state() -> None:
     async with state_lock:
@@ -160,7 +149,6 @@ async def broadcast_state() -> None:
 
 async def broadcast_voice_peers() -> None:
     async with state_lock:
-        snapshots: list[tuple[Any, dict[str, Any]]] = []
         for client in clients.values():
             peers = [
                 public_user(peer)
@@ -170,21 +158,12 @@ async def broadcast_voice_peers() -> None:
                 and peer.voice_channel_id
                 and peer.voice_channel_id == client.voice_channel_id
             ]
-            snapshots.append(
-                (
-                    client.websocket,
-                    {
-                        "type": "voice_peers",
-                        "serverId": client.server_id,
-                        "channelId": client.voice_channel_id,
-                        "peers": peers,
-                    },
-                )
-            )
-    await asyncio.gather(
-        *(send_json(websocket, payload) for websocket, payload in snapshots),
-        return_exceptions=True,
-    )
+            await send_json(client.websocket, {
+                "type": "voice_peers",
+                "serverId": client.server_id,
+                "channelId": client.voice_channel_id,
+                "peers": peers,
+            })
 
 def get_client_by_ws(websocket: Any) -> Client | None:
     for client in clients.values():
@@ -225,8 +204,7 @@ async def handle_join_server(client: Client, data: dict[str, Any]) -> None:
     server_id = str(data.get("serverId", ""))
     async with state_lock:
         server = servers.get(server_id)
-        if not server:
-            return
+        if not server: return
         client.server_id = server_id
         if client.text_channel_id not in server["messages"]:
             client.text_channel_id = first_text_channel(server)
@@ -240,8 +218,7 @@ async def handle_create_channel(client: Client, data: dict[str, Any]) -> None:
     kind = str(data.get("kind", "text"))
     async with state_lock:
         server = servers.get(server_id)
-        if not server:
-            return
+        if not server: return
         if kind == "voice":
             server["voice_channels"].append(voice_channel(data.get("name", "voice")))
         else:
@@ -255,8 +232,7 @@ async def handle_join_text(client: Client, data: dict[str, Any]) -> None:
     channel_id = str(data.get("channelId", ""))
     async with state_lock:
         server = servers.get(server_id)
-        if not server or channel_id not in server["messages"]:
-            return
+        if not server or channel_id not in server["messages"]: return
         client.server_id = server_id
         client.text_channel_id = channel_id
     await broadcast_state()
@@ -265,13 +241,11 @@ async def handle_chat(client: Client, data: dict[str, Any]) -> None:
     server_id = str(data.get("serverId", client.server_id))
     channel_id = str(data.get("channelId", client.text_channel_id))
     text = str(data.get("text", "")).strip()
-    if not text:
-        return
+    if not text: return
     text = text[:2000]
     async with state_lock:
         server = servers.get(server_id)
-        if not server or channel_id not in server["messages"]:
-            return
+        if not server or channel_id not in server["messages"]: return
         message = {
             "id": make_id("msg"),
             "userId": client.id,
@@ -289,11 +263,9 @@ async def handle_join_voice(client: Client, data: dict[str, Any]) -> None:
     channel_id = str(data.get("channelId", ""))
     async with state_lock:
         server = servers.get(server_id)
-        if not server:
-            return
+        if not server: return
         channel_ids = {channel["id"] for channel in server["voice_channels"]}
-        if channel_id not in channel_ids:
-            return
+        if channel_id not in channel_ids: return
         client.server_id = server_id
         client.voice_channel_id = channel_id
     await broadcast_state()
@@ -317,111 +289,66 @@ async def handle_media_state(client: Client, data: dict[str, Any]) -> None:
 async def handle_signal(client: Client, data: dict[str, Any]) -> None:
     target_id = str(data.get("to", ""))
     signal_data = data.get("data")
-    if not target_id or not isinstance(signal_data, dict):
-        return
+    if not target_id or not isinstance(signal_data, dict): return
     async with state_lock:
         target = clients.get(target_id)
-        allowed = (
-            target is not None
-            and target.server_id == client.server_id
-            and target.voice_channel_id is not None
-            and target.voice_channel_id == client.voice_channel_id
-        )
-        target_ws = target.websocket if allowed else None
-    if target_ws:
-        await send_json(target_ws, {"type": "signal", "from": client.id, "data": signal_data})
+        allowed = (target is not None and target.server_id == client.server_id and 
+                   target.voice_channel_id is not None and target.voice_channel_id == client.voice_channel_id)
+    if allowed and target:
+        await send_json(target.websocket, {"type": "signal", "from": client.id, "data": signal_data})
 
 async def dispatch(websocket: Any, raw: str) -> None:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return
-    if not isinstance(data, dict):
-        return
-
+    try: data = json.loads(raw)
+    except: return
+    if not isinstance(data, dict): return
     message_type = str(data.get("type", ""))
     client = get_client_by_ws(websocket)
-
     if message_type == "hello":
-        if client is None:
-            await handle_hello(websocket, data)
+        if client is None: await handle_hello(websocket, data)
         return
-
     if client is None:
         await send_json(websocket, {"type": "error", "message": "Сначала отправьте nick."})
         return
-
     handlers = {
-        "create_server": handle_create_server,
-        "join_server": handle_join_server,
-        "create_channel": handle_create_channel,
-        "join_text": handle_join_text,
-        "chat": handle_chat,
-        "join_voice": handle_join_voice,
-        "media_state": handle_media_state,
-        "signal": handle_signal,
+        "create_server": handle_create_server, "join_server": handle_join_server,
+        "create_channel": handle_create_channel, "join_text": handle_join_text,
+        "chat": handle_chat, "join_voice": handle_join_voice,
+        "media_state": handle_media_state, "signal": handle_signal,
     }
-    if message_type == "leave_voice":
-        await handle_leave_voice(client)
-        return
+    if message_type == "leave_voice": await handle_leave_voice(client)
+    else:
+        handler = handlers.get(message_type)
+        if handler: await handler(client, data)
 
-    handler = handlers.get(message_type)
-    if handler:
-        await handler(client, data)
-
-async def websocket_handler(websocket: Any) -> None:
+async def ws_route(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
     try:
-        async for raw in websocket:
-            await dispatch(websocket, raw)
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await dispatch(ws, msg.data)
     finally:
-        removed = False
         async with state_lock:
-            client = get_client_by_ws(websocket)
-            if client:
-                clients.pop(client.id, None)
-                removed = True
-        if removed:
-            await broadcast_state()
-            await broadcast_voice_peers()
+            client = get_client_by_ws(ws)
+            if client: clients.pop(client.id, None)
+        await broadcast_state()
+        await broadcast_voice_peers()
+    return ws
 
-class AppHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
+async def static_route(request):
+    path = request.path
+    if path == "/config.js":
+        return web.Response(text=f"window.PYCORD_CONFIG = {{ \"wsHost\": window.location.hostname, \"wsPort\": {PORT} }};", content_type="application/javascript")
+    if path == "/": path = "/index.html"
+    file_path = STATIC_DIR / path.lstrip("/")
+    if file_path.exists(): return web.FileResponse(file_path)
+    return web.Response(status=404)
 
-    def do_GET(self) -> None:
-        if self.path.split("?", 1)[0] == "/config.js":
-            # Используем порт Render для конфигурации фронтенда
-            body = (
-                "window.PYCORD_CONFIG = "
-                + json.dumps({"wsHost": "window.location.hostname", "wsPort": PORT}, ensure_ascii=False)
-                + ";"
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/javascript; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        super().do_GET()
-
-    def end_headers(self) -> None:
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
-    def log_message(self, format: str, *args: Any) -> None:
-        pass # Отключаем лишние логи
-
-async def run_server():
-    # Запуск websocket сервера в асинхронном режиме
-    async with websockets.serve(websocket_handler, HOST, PORT, max_size=2_000_000):
-        await asyncio.Future()
-
-def main() -> None:
+async def init_app():
     seed_state()
-    # Запуск HTTP сервера в потоке
-    threading.Thread(target=ThreadingHTTPServer((HOST, PORT), AppHandler).serve_forever, daemon=True).start()
-    # Запуск websocket цикла
-    asyncio.run(run_server())
+    app = web.Application()
+    app.add_routes([web.get('/ws', ws_route), web.get('/{tail:.*}', static_route)])
+    return app
 
 if __name__ == "__main__":
-    main()
+    web.run_app(init_app(), host=HOST, port=PORT)
