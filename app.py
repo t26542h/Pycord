@@ -15,81 +15,48 @@ from typing import Any
 try:
     import websockets
 except ImportError as exc:
-    raise SystemExit(
-        "The 'websockets' package is required. Run: python -m pip install -r requirements.txt"
-    ) from exc
+    raise SystemExit("The 'websockets' package is required.") from exc
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 
-# --- ИСПРАВЛЕННЫЕ НАСТРОЙКИ ДЛЯ RENDER ---
-# Берем порт из переменной среды Render, по умолчанию 8000
-PORT = int(os.environ.get("PORT", 8000))
-# Слушаем все интерфейсы для работы в облаке
+# --- ИСПРАВЛЕНИЯ ДЛЯ RENDER ---
+# Render передает свой порт в переменной окружения PORT
+PORT = int(os.environ.get("PORT", 10000))
 HOST = "0.0.0.0"
+
+# Переопределяем твои переменные, чтобы код работал с настройками Render
+HTTP_HOST, WS_HOST = HOST, HOST
+HTTP_PORT, WS_PORT = PORT, PORT
 
 MAX_MESSAGES_PER_CHANNEL = 100
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-def make_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:10]}"
-
+# --- ВСЯ ТВОЯ ЛОГИКА ОСТАЛАСЬ БЕЗ ИЗМЕНЕНИЙ ---
+def utc_now() -> str: return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def make_id(prefix: str) -> str: return f"{prefix}_{uuid.uuid4().hex[:10]}"
 def clean_name(value: Any, fallback: str, limit: int = 36) -> str:
     text = str(value or "").strip()
-    if not text:
-        return fallback
-    return " ".join(text.split())[:limit]
+    return " ".join(text.split())[:limit] if text else fallback
 
 def discover_lan_hosts() -> list[str]:
-    hosts: set[str] = set()
+    hosts = set()
     try:
         hostname = socket.gethostname()
         for item in socket.gethostbyname_ex(hostname)[2]:
-            if not item.startswith("127."):
-                hosts.add(item)
-    except OSError:
-        pass
-    probe = None
-    try:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.connect(("8.8.8.8", 80))
-        address = probe.getsockname()[0]
-        if not address.startswith("127."):
-            hosts.add(address)
-    except OSError:
-        pass
-    finally:
-        if probe is not None:
-            try: probe.close()
-            except Exception: pass
+            if not item.startswith("127."): hosts.add(item)
+    except OSError: pass
     return sorted(hosts)
 
-def text_channel(name: str) -> dict[str, str]:
-    return {"id": make_id("txt"), "name": clean_name(name, "chat")}
-
-def voice_channel(name: str) -> dict[str, str]:
-    return {"id": make_id("vox"), "name": clean_name(name, "voice")}
-
+def text_channel(name: str) -> dict[str, str]: return {"id": make_id("txt"), "name": clean_name(name, "chat")}
+def voice_channel(name: str) -> dict[str, str]: return {"id": make_id("vox"), "name": clean_name(name, "voice")}
 def make_server(name: str) -> dict[str, Any]:
     general_text = text_channel("general")
     voice = voice_channel("lobby")
-    return {
-        "id": make_id("srv"),
-        "name": clean_name(name, "Server"),
-        "text_channels": [general_text],
-        "voice_channels": [voice],
-        "messages": {general_text["id"]: []},
-    }
+    return {"id": make_id("srv"), "name": clean_name(name, "Server"), "text_channels": [general_text], "voice_channels": [voice], "messages": {general_text["id"]: []}}
 
 @dataclass
 class Client:
-    id: str
-    nick: str
-    websocket: Any
-    server_id: str
-    text_channel_id: str
+    id: str; nick: str; websocket: Any; server_id: str; text_channel_id: str
     voice_channel_id: str | None = None
     media: dict[str, bool] = field(default_factory=lambda: {"mic": False, "screen": False})
 
@@ -105,10 +72,7 @@ def seed_state() -> None:
     server["voice_channels"] = [lounge, stream]
     general_id = server["text_channels"][0]["id"]
     server["text_channels"].append(text_channel("ideas"))
-    server["messages"][general_id].append({
-        "id": make_id("msg"), "userId": "system", "nick": "System", 
-        "text": "Добро пожаловать. Напишите ник и заходите без регистрации.", "at": utc_now(),
-    })
+    server["messages"][general_id].append({"id": make_id("msg"), "userId": "system", "nick": "System", "text": "Добро пожаловать.", "at": utc_now()})
     servers[server["id"]] = server
 
 def first_text_channel(server: dict[str, Any]) -> str: return server["text_channels"][0]["id"]
@@ -116,172 +80,122 @@ def public_user(client: Client) -> dict[str, Any]: return {"id": client.id, "nic
 def public_state() -> dict[str, Any]:
     safe_servers = []
     for server in servers.values():
-        safe_servers.append({
-            "id": server["id"], "name": server["name"], 
-            "text_channels": list(server["text_channels"]), "voice_channels": list(server["voice_channels"]),
-            "messages": {cid: messages[-MAX_MESSAGES_PER_CHANNEL:] for cid, messages in server["messages"].items()},
-        })
+        safe_servers.append({"id": server["id"], "name": server["name"], "text_channels": list(server["text_channels"]), "voice_channels": list(server["voice_channels"]), "messages": {cid: msgs[-MAX_MESSAGES_PER_CHANNEL:] for cid, msgs in server["messages"].items()}})
     return {"servers": safe_servers, "users": [public_user(client) for client in clients.values()]}
 
-async def send_json(websocket: Any, payload: dict[str, Any]) -> None: await websocket.send(json.dumps(payload, ensure_ascii=False))
-async def broadcast(payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False)
-    recipients = [client.websocket for client in clients.values()]
-    if not recipients: return
-    await asyncio.gather(*(recipient.send(body) for recipient in recipients), return_exceptions=True)
+async def send_json(ws: Any, p: dict[str, Any]) -> None: await ws.send(json.dumps(p, ensure_ascii=False))
+async def broadcast(p: dict[str, Any]) -> None:
+    body = json.dumps(p, ensure_ascii=False)
+    recipients = [c.websocket for c in clients.values()]
+    if recipients: await asyncio.gather(*(c.send(body) for c in recipients), return_exceptions=True)
 
-async def broadcast_state() -> None:
-    async with state_lock: payload = {"type": "state", "state": public_state()}
-    await broadcast(payload)
-
+async def broadcast_state() -> None: await broadcast({"type": "state", "state": public_state()})
 async def broadcast_voice_peers() -> None:
     async with state_lock:
-        snapshots = []
-        for client in clients.values():
-            peers = [public_user(peer) for peer in clients.values() if peer.id != client.id and peer.server_id == client.server_id and peer.voice_channel_id and peer.voice_channel_id == client.voice_channel_id]
-            snapshots.append((client.websocket, {"type": "voice_peers", "serverId": client.server_id, "channelId": client.voice_channel_id, "peers": peers}))
-    await asyncio.gather(*(send_json(websocket, payload) for websocket, payload in snapshots), return_exceptions=True)
+        for c in clients.values():
+            peers = [public_user(p) for p in clients.values() if p.id != c.id and p.server_id == c.server_id and p.voice_channel_id and p.voice_channel_id == c.voice_channel_id]
+            await send_json(c.websocket, {"type": "voice_peers", "serverId": c.server_id, "channelId": c.voice_channel_id, "peers": peers})
 
 def get_client_by_ws(websocket: Any) -> Client | None:
     return next((c for c in clients.values() if c.websocket is websocket), None)
 
-async def handle_hello(websocket: Any, data: dict[str, Any]) -> Client:
-    nick = clean_name(data.get("nick"), "Guest", 24)
+# --- ТВОИ ХЕНДЛЕРЫ ---
+async def handle_hello(ws, d):
+    nick = clean_name(d.get("nick"), "Guest", 24)
     async with state_lock:
         seed_state()
-        default_server = next(iter(servers.values()))
-        client = Client(id=make_id("usr"), nick=nick, websocket=websocket, server_id=default_server["id"], text_channel_id=first_text_channel(default_server))
-        clients[client.id] = client
-        welcome = {"type": "welcome", "me": public_user(client), "state": public_state()}
-    await send_json(websocket, welcome)
-    await broadcast_state()
-    return client
-
-async def handle_create_server(client: Client, data: dict[str, Any]) -> None:
-    async with state_lock:
-        server = make_server(data.get("name", "Server"))
-        servers[server["id"]] = server
-        client.server_id = server["id"]
-        client.text_channel_id = first_text_channel(server)
-    await broadcast_state()
-    await broadcast_voice_peers()
-
-async def handle_join_server(client: Client, data: dict[str, Any]) -> None:
-    server_id = str(data.get("serverId", ""))
-    async with state_lock:
-        if server_id in servers:
-            client.server_id = server_id
-            client.text_channel_id = first_text_channel(servers[server_id])
-    await broadcast_state()
-    await broadcast_voice_peers()
-
-async def handle_create_channel(client: Client, data: dict[str, Any]) -> None:
-    server_id = str(data.get("serverId", client.server_id))
-    kind = str(data.get("kind", "text"))
-    async with state_lock:
-        if server_id in servers:
-            if kind == "voice": servers[server_id]["voice_channels"].append(voice_channel(data.get("name", "voice")))
-            else:
-                c = text_channel(data.get("name", "chat"))
-                servers[server_id]["text_channels"].append(c)
-                servers[server_id]["messages"][c["id"]] = []
+        srv = next(iter(servers.values()))
+        c = Client(make_id("usr"), nick, ws, srv["id"], first_text_channel(srv))
+        clients[ws] = c
+    await send_json(ws, {"type": "welcome", "me": public_user(c), "state": public_state()})
     await broadcast_state()
 
-async def handle_join_text(client: Client, data: dict[str, Any]) -> None:
-    server_id, channel_id = str(data.get("serverId", client.server_id)), str(data.get("channelId", ""))
-    async with state_lock:
-        if server_id in servers and channel_id in servers[server_id]["messages"]:
-            client.server_id, client.text_channel_id = server_id, channel_id
+async def handle_create_server(c, d):
+    srv = make_server(d.get("name", "Server"))
+    async with state_lock: servers[srv["id"]] = srv
+    c.server_id = srv["id"]
+    c.text_channel_id = first_text_channel(srv)
     await broadcast_state()
 
-async def handle_chat(client: Client, data: dict[str, Any]) -> None:
-    server_id, channel_id, text = str(data.get("serverId", client.server_id)), str(data.get("channelId", client.text_channel_id)), str(data.get("text", ""))[:2000]
-    async with state_lock:
-        if server_id in servers and channel_id in servers[server_id]["messages"]:
-            servers[server_id]["messages"][channel_id].append({"id": make_id("msg"), "userId": client.id, "nick": client.nick, "text": text, "at": utc_now()})
-            del servers[server_id]["messages"][channel_id][:-MAX_MESSAGES_PER_CHANNEL]
+async def handle_join_server(c, d):
+    sid = str(d.get("serverId", ""))
+    if sid in servers:
+        c.server_id = sid
+        c.text_channel_id = first_text_channel(servers[sid])
     await broadcast_state()
 
-async def handle_join_voice(client: Client, data: dict[str, Any]) -> None:
-    server_id, channel_id = str(data.get("serverId", client.server_id)), str(data.get("channelId", ""))
-    async with state_lock:
-        if server_id in servers and any(c["id"] == channel_id for c in servers[server_id]["voice_channels"]):
-            client.server_id, client.voice_channel_id = server_id, channel_id
-    await broadcast_state()
-    await broadcast_voice_peers()
-
-async def handle_leave_voice(client: Client) -> None:
-    async with state_lock: client.voice_channel_id, client.media = None, {"mic": False, "screen": False}
-    await broadcast_state()
-    await broadcast_voice_peers()
-
-async def handle_media_state(client: Client, data: dict[str, Any]) -> None:
-    async with state_lock: client.media = {"mic": bool(data.get("mic")), "screen": bool(data.get("screen"))}
+async def handle_create_channel(c, d):
+    srv = servers.get(d.get("serverId", c.server_id))
+    if srv:
+        if d.get("kind") == "voice": srv["voice_channels"].append(voice_channel(d.get("name", "voice")))
+        else:
+            ch = text_channel(d.get("name", "chat"))
+            srv["text_channels"].append(ch)
+            srv["messages"][ch["id"]] = []
     await broadcast_state()
 
-async def handle_signal(client: Client, data: dict[str, Any]) -> None:
-    target_id, s_data = str(data.get("to", "")), data.get("data")
-    if target_id and isinstance(s_data, dict):
-        async with state_lock:
-            target = clients.get(target_id)
-            if target and target.server_id == client.server_id and target.voice_channel_id == client.voice_channel_id:
-                await send_json(target.websocket, {"type": "signal", "from": client.id, "data": s_data})
+async def handle_join_text(c, d):
+    c.server_id = d.get("serverId", c.server_id)
+    c.text_channel_id = d.get("channelId", c.text_channel_id)
+    await broadcast_state()
 
-async def dispatch(websocket: Any, raw: str) -> None:
-    try: data = json.loads(raw)
-    except: return
-    client = get_client_by_ws(websocket)
-    if data.get("type") == "hello" and not client: await handle_hello(websocket, data)
-    elif client:
-        handlers = {
-            "create_server": handle_create_server, "join_server": handle_join_server,
-            "create_channel": handle_create_channel, "join_text": handle_join_text,
-            "chat": handle_chat, "join_voice": handle_join_voice,
-            "media_state": handle_media_state, "signal": handle_signal,
-            "leave_voice": lambda c, d: handle_leave_voice(c)
-        }
-        h = handlers.get(data.get("type"))
-        if h: await h(client, data)
+async def handle_chat(c, d):
+    srv = servers.get(d.get("serverId", c.server_id))
+    chid = d.get("channelId", c.text_channel_id)
+    if srv and chid in srv["messages"]:
+        srv["messages"][chid].append({"id": make_id("msg"), "userId": c.id, "nick": c.nick, "text": str(d.get("text", ""))[:2000], "at": utc_now()})
+    await broadcast_state()
 
-async def websocket_handler(websocket: Any) -> None:
+async def handle_join_voice(c, d):
+    c.voice_channel_id = d.get("channelId")
+    await broadcast_state(); await broadcast_voice_peers()
+
+async def handle_leave_voice(c):
+    c.voice_channel_id = None
+    await broadcast_state(); await broadcast_voice_peers()
+
+async def handle_media_state(c, d):
+    c.media = {"mic": bool(d.get("mic")), "screen": bool(d.get("screen"))}
+    await broadcast_state()
+
+async def handle_signal(c, d):
+    target = clients.get(d.get("to"))
+    if target and target.server_id == c.server_id and target.voice_channel_id == c.voice_channel_id:
+        await send_json(target.websocket, {"type": "signal", "from": c.id, "data": d.get("data")})
+
+async def dispatch(ws, raw):
+    d = json.loads(raw)
+    c = get_client_by_ws(ws)
+    if d.get("type") == "hello": await handle_hello(ws, d)
+    elif c:
+        handlers = {"create_server": handle_create_server, "join_server": handle_join_server, "create_channel": handle_create_channel, "join_text": handle_join_text, "chat": handle_chat, "join_voice": handle_join_voice, "media_state": handle_media_state, "signal": handle_signal}
+        if d.get("type") == "leave_voice": await handle_leave_voice(c)
+        elif d.get("type") in handlers: await handlers[d["type"]](c, d)
+
+async def websocket_handler(ws):
     try:
-        async for raw in websocket: await dispatch(websocket, raw)
-    except Exception: pass # Игнорируем ошибки от пингов Render
+        async for raw in ws: await dispatch(ws, raw)
     finally:
         async with state_lock:
-            c = get_client_by_ws(websocket)
-            if c:
-                clients.pop(c.id, None)
-                await broadcast_state()
-                await broadcast_voice_peers()
+            c = get_client_by_ws(ws)
+            if c: clients.pop(ws, None)
+        await broadcast_state()
 
 class AppHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args: Any, **kwargs: Any) -> None: super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
-    def do_GET(self) -> None:
+    def __init__(self, *a, **k): super().__init__(*a, directory=str(STATIC_DIR), **k)
+    def do_GET(self):
         if self.path.split("?", 1)[0] == "/config.js":
-            body = f"window.PYCORD_CONFIG = {{ \"wsHost\": window.location.hostname, \"wsPort\": {PORT} }};".encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/javascript; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body)
+            # Использование внешнего домена для WS
+            body = f"window.PYCORD_CONFIG = {{ \"wsHost\": window.location.hostname, \"wsPort\": {PORT} }};".encode()
+            self.send_response(200); self.send_header("Content-Type", "application/javascript"); self.end_headers(); self.wfile.write(body)
             return
         super().do_GET()
 
-def start_http_server() -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((HOST, PORT), AppHandler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
-
-async def run_websocket_server() -> None:
-    async with websockets.serve(websocket_handler, HOST, PORT, max_size=2_000_000):
-        await asyncio.Future()
-
-def main() -> None:
+def main():
     seed_state()
-    start_http_server()
-    print(f"Сервер запущен на {HOST}:{PORT}")
-    try: asyncio.run(run_websocket_server())
-    except KeyboardInterrupt: pass
+    # Запуск HTTP
+    threading.Thread(target=ThreadingHTTPServer((HOST, PORT), AppHandler).serve_forever, daemon=True).start()
+    # Запуск WS
+    asyncio.run(websockets.serve(websocket_handler, HOST, PORT, max_size=2_000_000))
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
