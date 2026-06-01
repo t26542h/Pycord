@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PyCord Lite</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="/config.js"></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main id="loginView" class="login-view">
+      <form id="loginForm" class="login-panel">
+        <div class="mark">PC</div>
+        <h1>PyCord Lite</h1>
+        <label for="nickInput">Ник</label>
+        <div class="login-row">
+          <input id="nickInput" name="nick" maxlength="24" autocomplete="nickname" placeholder="Например, Alex" required />
+          <button type="submit">Войти</button>
+        </div>
+        <p id="loginError" class="error-line" aria-live="polite"></p>
+      </form>
+    </main>
+
+    <main id="appView" class="app-view hidden">
+      <aside class="server-rail" aria-label="Серверы">
+        <div id="serverList" class="server-list"></div>
+        <button id="createServerBtn" class="server-add" title="Создать сервер" aria-label="Создать сервер">
+          <i data-lucide="plus"></i>
+        </button>
+      </aside>
+
+      <aside class="channels-panel">
+        <header class="panel-head">
+          <div>
+            <span class="eyebrow">Сервер</span>
+            <h2 id="serverTitle">...</h2>
+          </div>
+          <span id="connectionStatus" class="status-pill">online</span>
+        </header>
+
+        <section class="channel-section">
+          <div class="section-title">
+            <span>Текстовые</span>
+            <button id="createTextBtn" class="icon-btn" title="Добавить текстовый канал" aria-label="Добавить текстовый канал">
+              <i data-lucide="plus"></i>
+            </button>
+          </div>
+          <div id="textChannels" class="channel-list"></div>
+        </section>
+
+        <section class="channel-section">
+          <div class="section-title">
+            <span>Голосовые</span>
+            <button id="createVoiceBtn" class="icon-btn" title="Добавить голосовой канал" aria-label="Добавить голосовой канал">
+              <i data-lucide="plus"></i>
+            </button>
+          </div>
+          <div id="voiceChannels" class="channel-list"></div>
+        </section>
+
+        <footer class="profile-strip">
+          <div class="avatar" id="myAvatar">?</div>
+          <div>
+            <strong id="myNick">...</strong>
+            <span id="myState">в сети</span>
+          </div>
+        </footer>
+      </aside>
+
+      <section class="chat-panel">
+        <header class="chat-head">
+          <div>
+            <span class="eyebrow">Канал</span>
+            <h2 id="channelTitle"># general</h2>
+          </div>
+          <button id="copyInviteBtn" class="utility-btn" title="Скопировать адрес" aria-label="Скопировать адрес">
+            <i data-lucide="link"></i>
+            <span>Адрес</span>
+          </button>
+        </header>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="messageForm" class="composer">
+          <input id="messageInput" maxlength="2000" autocomplete="off" placeholder="Сообщение" />
+          <button type="submit" title="Отправить" aria-label="Отправить">
+            <i data-lucide="send"></i>
+          </button>
+        </form>
+      </section>
+
+      <aside class="voice-panel">
+        <section class="voice-head">
+          <span class="eyebrow">Голос</span>
+          <h2 id="voiceTitle">Не подключен</h2>
+          <div class="voice-actions">
+            <button id="micBtn" class="round-btn" title="Микрофон" aria-label="Микрофон">
+              <i data-lucide="mic"></i>
+            </button>
+            <button id="screenBtn" class="round-btn" title="Демонстрация экрана" aria-label="Демонстрация экрана">
+              <i data-lucide="monitor-up"></i>
+            </button>
+            <button id="leaveVoiceBtn" class="round-btn danger" title="Выйти из голоса" aria-label="Выйти из голоса">
+              <i data-lucide="phone-off"></i>
+            </button>
+          </div>
+        </section>
+
+        <section class="media-section">
+          <div id="mediaTiles" class="media-tiles"></div>
+        </section>
+
+        <section class="members-section">
+          <div class="section-title plain">Участники</div>
+          <div id="membersList" class="members-list"></div>
+        </section>
+      </aside>
+    </main>
+  </body>
+</html>
